@@ -1,0 +1,598 @@
+<!-- Ver 2.1: 저장 로직 재구축 (빈 글 생성 방지, 즉시 저장 지원) & 리스트 필터링 -->
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>우승수 블로그</title>
+    
+    <!-- 폰트 및 아이콘 -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700;800&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+
+    <style>
+        /* --- 테마 및 기본 스타일 --- */
+        :root {
+            --bg-app: #fdfbf7; --bg-panel: #ffffff; --bg-sidebar: #f4f4f2;
+            --text-main: #2c2c2c; --text-sub: #5f5f5f; --accent: #d94844;
+            --border: #e0e0e0; --shadow: 0 4px 12px rgba(0,0,0,0.08);
+            --nav-height: 60px; /* PC 기본 높이 */
+        }
+        body.dark-mode {
+            --bg-app: #121212; --bg-panel: #1e1e1e; --bg-sidebar: #181818;
+            --text-main: #e0e0e0; --text-sub: #a0a0a0; --accent: #ff8a80;
+            --border: #333333; --shadow: 0 4px 12px rgba(0,0,0,0.4);
+        }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body {
+            font-family: 'Nanum Myeongjo', serif; background-color: var(--bg-app);
+            color: var(--text-main); margin: 0; height: 100vh; overflow: hidden;
+            transition: background-color 0.3s, color 0.3s;
+        }
+        
+        /* --- 네비게이션 --- */
+        nav {
+            height: var(--nav-height); background-color: var(--bg-panel);
+            border-bottom: 1px solid var(--border); display: flex; justify-content: space-between;
+            align-items: center; 
+            padding: 0 24px; 
+            position: fixed; top: 0; width: 100%; z-index: 100;
+            transition: height 0.3s ease;
+        }
+        .nav-logo { font-weight: 800; font-size: 1.2rem; display: flex; align-items: center; gap: 10px; }
+        .nav-controls { display: flex; gap: 8px; background: var(--bg-sidebar); padding: 4px; border-radius: 8px; }
+        .nav-tab { background: none; border: none; padding: 6px 16px; border-radius: 6px; cursor: pointer; color: var(--text-sub); transition: all 0.2s; }
+        .nav-tab.active { background-color: var(--bg-panel); color: var(--text-main); font-weight: 700; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; margin-left: 10px; transition: background 0.3s; }
+        .status-dot.connected { background: #4caf50; box-shadow: 0 0 5px #4caf50; }
+
+        /* --- 레이아웃 --- */
+        #app-container { margin-top: var(--nav-height); height: calc(100vh - var(--nav-height)); transition: margin-top 0.3s ease; }
+        
+        .view-section { display: none; height: 100%; width: 100%; }
+        .view-section.active { display: block; }
+        .view-section.active.flex-view { display: flex; }
+
+        /* --- 블로그 뷰 --- */
+        .blog-container { 
+            width: 100%; 
+            height: 100%; 
+            overflow-y: auto; 
+            padding-top: 120px; 
+            -webkit-overflow-scrolling: touch; 
+        }
+        .blog-inner {
+            max-width: 800px; 
+            margin: 0 auto; 
+            padding: 0 24px 40px 24px;
+        }
+
+        .post-card {
+            background-color: var(--bg-panel); border: 1px solid var(--border);
+            padding: 30px; margin-bottom: 10px; border-radius: 12px; cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .post-card:hover { transform: translateY(-2px); border-color: var(--accent); }
+        .card-title { font-size: 1.5rem; margin: 10px 0; font-weight: 700; line-height: 1.3; }
+        .card-meta { font-size: 0.85rem; color: var(--text-sub); }
+        .card-excerpt { color: var(--text-sub); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.6; }
+
+        /* --- 에디터 뷰 --- */
+        .editor-sidebar { 
+            width: 300px; 
+            min-width: 300px; 
+            flex-shrink: 0;
+            background-color: var(--bg-sidebar); 
+            border-right: 1px solid var(--border); 
+            display: flex; 
+            flex-direction: column; 
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); 
+            padding-top: 0; 
+            overflow: hidden; 
+        }
+        
+        /* PC에서 접혔을 때 */
+        .editor-sidebar.collapsed { width: 0; min-width: 0; border-right: none; }
+
+        /* 사이드바 헤더 */
+        .sidebar-header {
+            padding: 15px 24px;
+            border-bottom: 1px solid var(--border); 
+            display: flex; justify-content: space-between; align-items: center; 
+            background-color: var(--bg-sidebar);
+            flex-shrink: 0;
+            height: 60px;
+        }
+        .sidebar-title { font-weight: 800; font-size: 1.1rem; color: var(--text-main); }
+        .sidebar-close-btn { background: none; border: none; font-size: 1.3rem; cursor: pointer; color: var(--text-main); padding: 5px; display: none; }
+
+        .sidebar-list { list-style: none; padding: 10px 8px; margin: 0; flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+        .list-item { padding: 12px 16px; border-radius: 8px; margin-bottom: 5px; cursor: pointer; position: relative; }
+        .list-item:hover { background-color: rgba(0,0,0,0.05); }
+        .list-item.active { background-color: var(--bg-panel); border: 1px solid var(--border); font-weight: 700; color: var(--accent); }
+        
+        /* 리스트 아이템 삭제 버튼 스타일 */
+        .item-delete-btn {
+            position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+            border: none; background: none; color: #aaa; cursor: pointer; 
+            padding: 8px; border-radius: 4px; display: none; /* 기본 숨김 */
+        }
+        .list-item:hover .item-delete-btn { display: block; } /* 호버 시 표시 */
+        .item-delete-btn:hover { color: var(--accent); background-color: rgba(0,0,0,0.05); }
+
+        /* 모바일에서는 항상 표시 */
+        @media (max-width: 768px) {
+            .item-delete-btn { display: block; }
+        }
+        
+        /* 새 글 작성 버튼 (하단 고정) */
+        .new-post-trigger {
+            width: 100%; padding: 18px; background-color: var(--bg-panel);
+            border: none; border-top: 1px solid var(--border); 
+            color: var(--text-main); cursor: pointer; text-align: center;
+            font-size: 1rem; font-weight: 700; display: flex; justify-content: center; align-items: center; gap: 8px;
+            flex-shrink: 0; margin: 0;
+        }
+        .new-post-trigger:hover { background-color: var(--bg-sidebar); color: var(--accent); }
+
+        .editor-main { flex: 1; background-color: var(--bg-panel); display: flex; flex-direction: column; min-width: 0; }
+        .editor-toolbar { padding: 10px 20px; border-bottom: none; display: flex; gap: 12px; align-items: center; justify-content: flex-start; }
+        .tool-btn { 
+            background: none; border: none; font-size: 1.2rem; color: var(--text-sub); cursor: pointer; 
+            padding: 8px; border-radius: 8px; transition: all 0.2s;
+        }
+        .tool-btn:hover { color: var(--text-main); background-color: var(--border); }
+        
+        .editor-canvas { 
+            flex: 1; 
+            /* [유지] 좌우 패딩 32px */
+            padding: 40px 32px; 
+            overflow-y: auto; max-width: 900px; margin: 0 auto; width: 100%;
+            display: flex; flex-direction: column; -webkit-overflow-scrolling: touch;
+        }
+        
+        #input-title { 
+            width: 100%; border: none; background: transparent; 
+            font-size: 2.2rem; font-weight: 800; font-family: inherit; 
+            color: var(--text-main); outline: none; margin-bottom: 24px; flex-shrink: 0; line-height: 1.3;
+            padding: 0;
+            resize: none; 
+            overflow: hidden; 
+            height: auto; 
+            display: block;
+        }
+        
+        #input-content { 
+            width: 100%; flex: 1; min-height: 400px; outline: none; 
+            font-size: 1.15rem; line-height: 1.8; color: var(--text-main); 
+            padding: 0;
+        }
+        
+        #input-content:empty:before { content: '내용을 입력하세요.'; color: var(--text-sub); opacity: 0.5; }
+
+        /* 모달 및 기타 */
+        .modal { position: fixed; inset: 0; background: var(--bg-app); z-index: 200; overflow-y: auto; padding: 60px 24px; display: none; -webkit-overflow-scrolling: touch; }
+        .modal.open { display: block; animation: slideUp 0.3s; }
+        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .close-btn { 
+            position: fixed; top: 24px; right: 24px; width: 48px; height: 48px; padding: 0; display: flex; align-items: center; justify-content: center;
+            background: none; border: none; cursor: pointer; box-shadow: none; z-index: 201; font-size: 2rem; color: var(--text-main); transition: transform 0.2s;
+        }
+        .close-btn:hover { transform: scale(1.1); }
+
+        /* 로그인 모달 */
+        #login-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 300; display: none; justify-content: center; align-items: center; padding: 20px; }
+        #login-modal.open { display: flex; }
+        .login-box { background: var(--bg-panel); padding: 30px; border-radius: 16px; width: 100%; max-width: 340px; box-shadow: 0 20px 40px rgba(0,0,0,0.2); text-align: center; }
+        .login-input { width: 100%; padding: 14px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-app); color: var(--text-main); font-family: inherit; font-size: 1rem; }
+        .login-btn { width: 100%; padding: 14px; background: var(--text-main); color: var(--bg-panel); border: none; border-radius: 8px; font-weight: bold; cursor: pointer; margin-top: 10px; font-size: 1rem; }
+        
+        /* 사이드바 오버레이 */
+        #sidebar-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 999; display: none; opacity: 0; transition: opacity 0.3s; backdrop-filter: blur(2px); }
+        #sidebar-overlay.open { display: block; opacity: 1; }
+
+        /* Mobile Optimization */
+        .mobile-only { display: none; }
+        
+        @media (max-width: 768px) {
+            :root { --nav-height: 56px; }
+            nav { padding: 0 16px; }
+            .nav-logo span { font-size: 1.1rem; }
+            .nav-tab { padding: 6px 12px; font-size: 0.85rem; }
+            #app-container { margin-top: var(--nav-height); }
+            
+            .flex-view { flex-direction: column; }
+            .mobile-only { display: inline-flex; }
+            
+            .blog-container { padding-top: 80px; }
+            .blog-inner { padding: 0 20px 40px 20px; }
+            .post-card { padding: 24px; }
+            .card-title { font-size: 1.3rem; }
+            
+            .editor-sidebar { 
+                position: fixed; top: 0; bottom: 0; left: -85%; width: 85%; max-width: 320px; 
+                height: 100vh; background-color: var(--bg-sidebar); border-right: 1px solid var(--border); 
+                z-index: 1000; box-shadow: 4px 0 15px rgba(0,0,0,0.1); padding-top: 0; 
+                min-width: auto; 
+            }
+            .editor-sidebar.open { left: 0; }
+            
+            .sidebar-header {
+                padding: 15px 24px;
+                background-color: var(--bg-panel);
+            }
+            .sidebar-close-btn { display: flex; }
+
+            .editor-canvas { padding: 20px 32px; }
+            #input-title { font-size: 1.6rem; margin-bottom: 16px; }
+            #input-content { font-size: 1.05rem; }
+            .tool-btn { min-width: 44px; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; }
+        }
+        @media (min-width: 769px) {
+            .sidebar-close-btn { display: none; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 로그인 모달 -->
+    <div id="login-modal">
+        <div class="login-box">
+            <h2 style="margin-top:0; margin-bottom:15px; font-size:1.4rem;">관리자 로그인</h2>
+            <p style="font-size:0.9rem; color:var(--text-sub); margin-bottom:25px; line-height:1.5;">우승수 블로그의<br>주인장만 들어올 수 있습니다.</p>
+            <input type="email" id="login-email" class="login-input" placeholder="이메일">
+            <input type="password" id="login-pw" class="login-input" placeholder="비밀번호" onkeyup="if(window.event.keyCode==13){adminLogin()}">
+            <button class="login-btn" onclick="adminLogin()">로그인</button>
+            <button onclick="closeLogin()" style="background:none; border:none; color:var(--text-sub); margin-top:15px; cursor:pointer; text-decoration:underline; font-size:0.9rem;">돌아가기</button>
+        </div>
+    </div>
+
+    <!-- 사이드바 오버레이 -->
+    <div id="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+    <nav>
+        <div class="nav-logo">
+            <span>우승수 블로그</span>
+            <div id="conn-status" class="status-dot" title="로그인 상태"></div>
+        </div>
+        <div class="nav-controls">
+            <button class="nav-tab active" onclick="switchView('blog')">블로그</button>
+            <button class="nav-tab" onclick="trySwitchToEditor()">에디터</button>
+        </div>
+        <button class="nav-tab" onclick="toggleTheme()"><i class="ph ph-moon"></i></button>
+    </nav>
+
+    <main id="app-container">
+        <!-- 블로그 뷰 -->
+        <section id="view-blog" class="view-section active">
+            <div class="blog-container">
+                <div class="blog-inner">
+                    <header style="text-align:center; margin-bottom:50px; padding-bottom:20px; border-bottom:1px solid var(--border);">
+                        <h1 style="margin:0 0 8px 0; line-height: 0.7;">ㅇ<br>ㅅ<br>ㅅ</h1>
+                        <p style="color:var(--text-sub); font-size:0.95rem;">“오늘은 또 무슨 일이?”</p>
+                    </header>
+                    <div id="blog-list">로딩 중...</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 에디터 뷰 -->
+        <section id="view-editor" class="view-section flex-view">
+            <aside class="editor-sidebar" id="sidebar-panel">
+                <div class="sidebar-header">
+                    <span class="sidebar-title">글 목록</span>
+                    <button class="sidebar-close-btn" onclick="toggleSidebar()"><i class="ph ph-x"></i></button>
+                </div>
+                <ul id="editor-list" class="sidebar-list"></ul>
+                <button class="new-post-trigger" onclick="createNewPost()">
+                    <i class="ph-bold ph-plus"></i> 새 글 작성
+                </button>
+            </aside>
+            <div class="editor-main">
+                <div class="editor-toolbar">
+                    <button class="tool-btn" onclick="toggleSidebar()" title="목록 접기/펴기"><i class="ph ph-list"></i></button>
+                    <!-- 저장하기 버튼 -->
+                    <button class="tool-btn" onclick="manualSaveWithAlert()" title="저장하기"><i class="ph ph-floppy-disk"></i></button>
+                    <!-- 삭제 버튼 -->
+                    <button class="tool-btn" onclick="deleteCurrentPost()" title="현재 글 삭제"><i class="ph ph-trash"></i></button>
+                    <button class="tool-btn" onclick="adminLogout()" title="로그아웃" style="margin-left:auto;"><i class="ph ph-sign-out"></i></button>
+                </div>
+                <div class="editor-canvas">
+                    <textarea id="input-title" placeholder="제목 입력" rows="1" oninput="autoResize(this); triggerAutoSave()"></textarea>
+                    <div id="input-content" contenteditable="true" oninput="triggerAutoSave()"></div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- 글 읽기 모달 -->
+    <div id="reader-modal" class="modal">
+        <!-- 닫기 버튼 -->
+        <button class="close-btn" onclick="closeReader()"><i class="ph ph-x"></i></button>
+        <div style="max-width:720px; margin:0 auto;">
+            <h1 id="r-title" style="font-size:2rem; margin-bottom:12px; line-height:1.3;"></h1>
+            <div id="r-date" style="color:var(--text-sub); border-bottom:1px solid var(--border); padding-bottom:20px; margin-bottom:30px; font-size:0.9rem;"></div>
+            <div id="r-content" style="font-size:1.1rem; line-height:1.8;"></div>
+        </div>
+    </div>
+
+    <!-- 파이어베이스 로직 -->
+    <script type="module">
+        const firebaseConfig = {
+            apiKey: "AIzaSyDa6TJOoCplZR6fz7bGXzWRF3hLk8zYJ_A",
+            authDomain: "seungsu-woo.firebaseapp.com",
+            projectId: "seungsu-woo",
+            storageBucket: "seungsu-woo.firebasestorage.app",
+            messagingSenderId: "11949728709",
+            appId: "1:11949728709:web:50d7ac696f3f98698561ac",
+            measurementId: "G-GLZ4G2FRH3"
+        };
+
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { getFirestore, collection, addDoc, doc, updateDoc, deleteDoc, onSnapshot, query, orderBy, serverTimestamp } 
+        from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        let db, auth, user;
+        let posts = [];
+        let currentId = null;
+
+        try {
+            const app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+        } catch (e) { console.error("Init Error:", e); }
+
+        // 1. 데이터 불러오기 (Read)
+        if (db) {
+            const publicQ = query(collection(db, "posts"), orderBy("createdAt", "desc"));
+            onSnapshot(publicQ, (snapshot) => {
+                posts = snapshot.docs.map(doc => ({
+                    id: doc.id, ...doc.data(),
+                    date: doc.data().createdAt ? new Date(doc.data().createdAt.toDate()).toLocaleDateString() : '날짜 없음'
+                }));
+                renderBlog();
+                if (user) renderEditorList(); 
+            }, (error) => {
+                console.log(error);
+            });
+        }
+
+        // 2. 인증 감지
+        onAuthStateChanged(auth, (currentUser) => {
+            user = currentUser;
+            if (user) {
+                document.getElementById('conn-status').classList.add('connected');
+                renderEditorList(); 
+            } else {
+                document.getElementById('conn-status').classList.remove('connected');
+                switchView('blog');
+            }
+        });
+
+        // --- 기능 로직 ---
+        
+        window.autoResize = (el) => {
+            el.style.height = 'auto';
+            el.style.height = el.scrollHeight + 'px';
+        };
+
+        window.trySwitchToEditor = () => {
+            if (user) switchView('editor');
+            else {
+                document.getElementById('login-modal').classList.add('open');
+                setTimeout(() => document.getElementById('login-email').focus(), 100);
+            }
+        };
+
+        window.closeLogin = () => document.getElementById('login-modal').classList.remove('open');
+
+        window.adminLogin = async () => {
+            const email = document.getElementById('login-email').value;
+            const pw = document.getElementById('login-pw').value;
+            try {
+                await signInWithEmailAndPassword(auth, email, pw);
+                closeLogin();
+                switchView('editor');
+            } catch (e) { alert("로그인 실패: 정보를 확인하세요."); }
+        };
+
+        window.adminLogout = async () => {
+            if(confirm("로그아웃 하시겠습니까?")) await signOut(auth);
+        };
+
+        // [수정] 새 글 버튼: 빈 글 생성하지 않고 화면만 초기화 (ID도 초기화)
+        window.createNewPost = async () => {
+            if (!user) return alert("권한이 없습니다.");
+            const titleEl = document.getElementById('input-title');
+            titleEl.value = "";
+            titleEl.style.height = 'auto'; 
+            document.getElementById('input-content').innerHTML = "";
+            currentId = null; // ID 초기화 -> 저장 시 새로 생성됨
+            
+            // 모바일이면 작성 시작 시 사이드바 닫기
+            if(window.innerWidth <= 768) toggleSidebar();
+        };
+
+        let autoSaveTimer;
+        window.triggerAutoSave = () => {
+            clearTimeout(autoSaveTimer);
+            autoSaveTimer = setTimeout(manualSave, 2000);
+        };
+
+        // 자동 저장용 (알림 없음)
+        window.manualSave = async () => {
+            if (!db || !user) return;
+            const title = document.getElementById('input-title').value;
+            const content = document.getElementById('input-content').innerHTML;
+            const textOnly = document.getElementById('input-content').innerText;
+            
+            // 내용이 아예 없으면 자동 저장 안 함
+            if (!title.trim() && !textOnly.trim()) return; 
+
+            try {
+                if (currentId) {
+                    // 기존 글 수정
+                    await updateDoc(doc(db, "posts", currentId), {
+                        title: title,
+                        content: content,
+                        excerpt: textOnly.slice(0, 100) + '...',
+                        lastModified: serverTimestamp()
+                    });
+                } else {
+                    // [수정] 새 글 생성 (currentId가 없을 때)
+                    const docRef = await addDoc(collection(db, "posts"), {
+                        title: title,
+                        content: content,
+                        excerpt: textOnly.slice(0, 100) + '...',
+                        createdAt: serverTimestamp(),
+                        authorId: user.uid
+                    });
+                    currentId = docRef.id; // 생성된 ID 할당
+                }
+            } catch (e) { console.error(e); }
+        };
+
+        // 수동 저장용 (알림 있음)
+        window.manualSaveWithAlert = async () => {
+            await manualSave();
+            alert("저장되었습니다.");
+        };
+
+        window.deletePost = async (e, id) => {
+            e.stopPropagation();
+            if (!user) return;
+            if (confirm("삭제하시겠습니까?")) {
+                try {
+                    await deleteDoc(doc(db, "posts", id));
+                    if (currentId === id) {
+                        const titleEl = document.getElementById('input-title');
+                        titleEl.value = "";
+                        titleEl.style.height = 'auto';
+                        document.getElementById('input-content').innerHTML = "";
+                        currentId = null;
+                    }
+                } catch(e) { alert("삭제 실패"); }
+            }
+        };
+
+        window.deleteCurrentPost = async () => {
+            if (!user || !currentId) return;
+            if (confirm("현재 글을 삭제하시겠습니까? (복구 불가)")) {
+                try {
+                    await deleteDoc(doc(db, "posts", currentId));
+                    const titleEl = document.getElementById('input-title');
+                    titleEl.value = "";
+                    titleEl.style.height = 'auto';
+                    document.getElementById('input-content').innerHTML = "";
+                    currentId = null; 
+                } catch(e) { alert("삭제 실패: " + e.message); }
+            }
+        };
+
+        function renderBlog() {
+            const el = document.getElementById('blog-list');
+            el.innerHTML = '';
+            if (posts.length === 0) {
+                el.innerHTML = '<p style="text-align:center; color:var(--text-sub); margin-top:50px;">등록된 글이 없습니다.</p>';
+                return;
+            }
+            posts.forEach(p => {
+                if (!p.title && !p.content) return;
+                el.innerHTML += `
+                    <article class="post-card" onclick="openReader('${p.id}')">
+                        <div class="card-meta">${p.date}</div>
+                        <h2 class="card-title">${p.title || '(제목 없음)'}</h2>
+                        <div class="card-excerpt">${p.excerpt || ''}</div>
+                    </article>
+                `;
+            });
+        }
+
+        // [수정] 빈 글(제목X, 내용X) 숨김 처리
+        function renderEditorList() {
+            const el = document.getElementById('editor-list');
+            el.innerHTML = '';
+            posts.forEach(p => {
+                // 제목과 내용이 모두 없으면 목록에서 숨김
+                if (!p.title && !p.content) return;
+
+                const active = p.id === currentId ? 'active' : '';
+                el.innerHTML += `
+                    <li class="list-item ${active}" onclick="loadPostToEditor('${p.id}')">
+                        <div style="font-weight:bold; margin-bottom:4px;">${p.title || '(제목 없음)'}</div>
+                        <div style="font-size:0.8rem; color:#888;">${p.date}</div>
+                        <!-- 휴지통 아이콘 버튼 추가 -->
+                        <button class="item-delete-btn" onclick="deletePost(event, '${p.id}')">
+                            <i class="ph ph-trash"></i>
+                        </button>
+                    </li>
+                `;
+            });
+        }
+
+        window.loadPostToEditor = (id) => {
+            const post = posts.find(p => p.id === id);
+            if (!post) return;
+            currentId = id;
+            if (document.activeElement.id !== 'input-title' && document.activeElement.id !== 'input-content') {
+                const titleEl = document.getElementById('input-title');
+                titleEl.value = post.title;
+                autoResize(titleEl); 
+                document.getElementById('input-content').innerHTML = post.content;
+            }
+            renderEditorList();
+            if(window.innerWidth <= 768) {
+                const sidebar = document.getElementById('sidebar-panel');
+                if (sidebar.classList.contains('open')) toggleSidebar();
+            }
+        };
+
+        window.openReader = (id) => {
+            const p = posts.find(item => item.id === id);
+            document.getElementById('r-title').textContent = p.title;
+            document.getElementById('r-date').textContent = p.date;
+            document.getElementById('r-content').innerHTML = p.content;
+            document.getElementById('reader-modal').classList.add('open');
+            document.body.style.overflow = 'hidden'; 
+        };
+        window.closeReader = () => {
+            document.getElementById('reader-modal').classList.remove('open');
+            document.body.style.overflow = '';
+        };
+        
+        window.switchView = (v) => {
+            document.querySelectorAll('.view-section').forEach(e => e.classList.remove('active'));
+            document.getElementById('view-' + v).classList.add('active');
+            document.querySelectorAll('.nav-tab').forEach(e => e.classList.remove('active'));
+            const tabs = document.querySelectorAll('.nav-tab');
+            if(v === 'blog') tabs[0].classList.add('active');
+            else tabs[1].classList.add('active');
+        };
+
+        window.toggleTheme = () => {
+            document.body.classList.toggle('dark-mode');
+            localStorage.setItem('theme', document.body.classList.contains('dark-mode') ? 'dark' : 'light');
+        };
+        
+        window.toggleSidebar = () => {
+            const sidebar = document.getElementById('sidebar-panel');
+            const overlay = document.getElementById('sidebar-overlay');
+            if (window.innerWidth > 768) {
+                sidebar.classList.toggle('collapsed');
+            } else {
+                const isOpen = sidebar.classList.toggle('open');
+                overlay.classList.toggle('open');
+                
+                if(window.innerWidth <= 768) {
+                    document.body.style.overflow = isOpen ? 'hidden' : '';
+                }
+            }
+        }
+        
+        if(localStorage.getItem('theme') === 'dark') document.body.classList.add('dark-mode');
+    </script>
+</body>
+</html>
