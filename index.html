@@ -1,4 +1,4 @@
-<!-- Ver 3.9: 로그아웃(방문자) 데이터 로딩 허용 & 방명록 작성 차단 해제 -->
+<!-- Ver 3.8: 인증 에러(Token Mismatch) 해결을 위한 하이브리드 설정 적용 -->
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -36,10 +36,7 @@
         nav {
             height: var(--nav-height); background-color: var(--bg-panel);
             border-bottom: 1px solid var(--border); display: flex; justify-content: space-between;
-            align-items: center; 
-            padding: 0 24px; 
-            position: fixed; top: 0; width: 100%; z-index: 100;
-            transition: height 0.3s ease;
+            align-items: center; padding: 0 24px; position: fixed; top: 0; width: 100%; z-index: 100;
         }
         .nav-logo { font-weight: 800; font-size: 1.2rem; display: flex; align-items: center; gap: 10px; cursor: pointer; }
         .nav-controls { display: flex; gap: 8px; background: var(--bg-sidebar); padding: 4px; border-radius: 8px; }
@@ -74,16 +71,7 @@
         .card-tags { display: flex; gap: 6px; }
         .card-tag-item { font-size: 0.75rem; color: var(--accent); }
         .card-title { font-size: 1.5rem; margin: 10px 0; font-weight: 700; line-height: 1.3; }
-        
-        .card-excerpt { 
-            color: var(--text-sub); 
-            line-clamp: 3;
-            -webkit-line-clamp: 3;
-            display: -webkit-box; 
-            -webkit-box-orient: vertical; 
-            overflow: hidden; 
-            line-height: 1.6; 
-        }
+        .card-excerpt { color: var(--text-sub); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.6; }
 
         /* --- 방명록 --- */
         .guestbook-form { background: var(--bg-panel); border: 1px solid var(--border); padding: 24px; border-radius: 12px; margin-bottom: 40px; }
@@ -187,7 +175,7 @@
             <div class="scroll-container">
                 <div class="inner-content">
                     <div id="tag-cloud"></div>
-                    <div id="blog-list">데이터를 불러오는 중...</div>
+                    <div id="blog-list">로딩 중...</div>
                 </div>
             </div>
         </section>
@@ -255,7 +243,9 @@
     </div>
 
     <script type="module">
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+        // [수정] 하이브리드 Config: Canvas 환경 변수가 있으면 그것을 쓰고, 없으면 하드코딩 값 사용 (에러 방지)
+        const isCanvas = typeof __firebase_config !== 'undefined';
+        const firebaseConfig = isCanvas ? JSON.parse(__firebase_config) : {
             apiKey: "AIzaSyDa6TJOoCplZR6fz7bGXzWRF3hLk8zYJ_A",
             authDomain: "seungsu-woo.firebaseapp.com",
             projectId: "seungsu-woo",
@@ -268,50 +258,21 @@
 
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInWithEmailAndPassword, signInAnonymously, signInWithCustomToken, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, doc, updateDoc, deleteDoc, onSnapshot, query, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, doc, updateDoc, deleteDoc, onSnapshot, query, orderBy, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
 
         let user = null, posts = [], guestbook = [], currentId = null, selectedTag = null;
-        
-        // [수정] 데이터 로드는 앱 시작 시 한 번 무조건 실행 (인증 여부 무관)
-        function startDataLoad() {
-            // 블로그 게시글 리스너
-            const postsCol = collection(db, 'artifacts', appId, 'public', 'data', 'posts');
-            onSnapshot(query(postsCol), (sn) => {
-                posts = sn.docs.map(d => ({ 
-                    id: d.id, ...d.data(), 
-                    date: d.data().createdAt ? d.data().createdAt.toDate().toLocaleDateString('ko-KR') : '날짜 없음' 
-                }));
-                posts.sort((a, b) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
-                renderTagCloud(); 
-                renderBlog();
-                // 관리자일 때만 에디터 리스트 갱신
-                if (user && !user.isAnonymous) renderEditorList(); 
-            });
 
-            // 방명록 리스너
-            const gbCol = collection(db, 'artifacts', appId, 'public', 'data', 'guestbook');
-            onSnapshot(query(gbCol), (sn) => {
-                guestbook = sn.docs.map(d => ({ 
-                    id: d.id, ...d.data(), 
-                    date: d.data().createdAt ? d.data().createdAt.toDate().toLocaleString('ko-KR', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '방금 전' 
-                }));
-                guestbook.sort((a, b) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
-                renderGuestbook();
-            });
-        }
-        
-        // 앱 시작 즉시 데이터 로드 시작
-        startDataLoad();
-
+        // --- 2. 인증 로직 (하이브리드 지원) ---
         const initAuth = async () => {
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
                     await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
+                    // 외부 환경(Netlify 등)에서는 익명 로그인 허용 (필요 시)
                     await signInAnonymously(auth).catch(() => {});
                 }
             } catch (e) { console.error("Auth:", e); }
@@ -325,44 +286,66 @@
 
             if (user) {
                 dot.classList.add('connected');
-                // 관리자만 에디터 탭 보임
+                // 관리자 이메일 로그인 시에만 에디터 노출
                 if (user.isAnonymous) {
                     editorTab.classList.remove('visible');
                     loginBtn.style.display = 'block';
-                    dot.title = "방문자 모드";
                 } else {
                     editorTab.classList.add('visible');
                     loginBtn.style.display = 'none';
-                    dot.title = "관리자 모드";
-                    renderEditorList(); // 로그인 직후 리스트 갱신
                 }
+                loadData();
             } else {
                 dot.classList.remove('connected');
-                // 로그아웃 시 자동 익명 로그인 시도
                 initAuth();
             }
         });
 
-        // --- 기능 로직 ---
+        // --- 3. 데이터 로드 ---
+        function loadData() {
+            if (!user) return;
+
+            // 블로그 글
+            const postsCol = collection(db, 'artifacts', appId, 'public', 'data', 'posts');
+            onSnapshot(query(postsCol), (sn) => {
+                posts = sn.docs.map(d => ({ 
+                    id: d.id, ...d.data(), 
+                    date: d.data().createdAt ? d.data().createdAt.toDate().toLocaleDateString('ko-KR') : '날짜 없음' 
+                }));
+                posts.sort((a, b) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
+                renderTagCloud(); renderBlog();
+                if (!user.isAnonymous) renderEditorList(); 
+            });
+
+            // 방명록
+            const gbCol = collection(db, 'artifacts', appId, 'public', 'data', 'guestbook');
+            onSnapshot(query(gbCol), (sn) => {
+                guestbook = sn.docs.map(d => ({ 
+                    id: d.id, ...d.data(), 
+                    date: d.data().createdAt ? d.data().createdAt.toDate().toLocaleString('ko-KR', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '방금 전' 
+                }));
+                guestbook.sort((a, b) => (b.createdAt?.toMillis() || 0) - (a.createdAt?.toMillis() || 0));
+                renderGuestbook();
+            });
+        }
+
+        // --- 4. 방명록 로직 ---
         window.submitGuestbook = async () => {
-            const nameEl = document.getElementById('gb-name');
-            const pwEl = document.getElementById('gb-password');
-            const contentEl = document.getElementById('gb-content');
-            
-            const name = nameEl.value.trim() || "익명";
-            const password = pwEl.value.trim();
-            const content = contentEl.value.trim();
+            if (!user) return;
+            const content = document.getElementById('gb-content').value.trim();
+            const name = document.getElementById('gb-name').value.trim() || "익명";
+            const password = document.getElementById('gb-password').value.trim();
 
             if (!content) return alert("할 말을 입력해주세요.");
             if (!password) return alert("비밀번호를 입력해주세요.");
 
             try {
-                // [수정] user 여부 체크 제거 (방문자도 작성 가능)
                 const gbCol = collection(db, 'artifacts', appId, 'public', 'data', 'guestbook');
                 await addDoc(gbCol, { name, password, content, createdAt: serverTimestamp() });
-                contentEl.value = ""; // 내용만 지움 (이름/비번은 편의상 유지 가능하나 여기선 초기화 안함 권장.. 일단 초기화)
-                nameEl.value = ""; pwEl.value = ""; 
-            } catch (e) { alert("저장 실패 (권한 문제일 수 있습니다. 파이어베이스 규칙을 확인하세요)"); }
+                document.getElementById('gb-content').value = "";
+                document.getElementById('gb-name').value = "";
+                document.getElementById('gb-password').value = "";
+            } catch (e) { alert("글을 남기지 못했습니다."); }
         };
 
         function renderGuestbook() {
@@ -384,8 +367,8 @@
         }
 
         window.manageGuestbookEntry = async (id) => {
-            const entry = guestbook.find(g => g.id === id);
             const pw = prompt("비밀번호를 입력하세요.");
+            const entry = guestbook.find(g => g.id === id);
             if (!pw || entry.password !== pw) return alert("비밀번호가 틀렸습니다.");
 
             const action = confirm("확인: 삭제 / 취소: 내용 수정");
@@ -403,6 +386,7 @@
             try { await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'guestbook', id)); } catch (e) { alert("삭제 실패"); }
         };
 
+        // --- 5. 에디터 & 블로그 제어 ---
         window.autoResize = (el) => { if (!el) return; el.style.height = 'auto'; el.style.height = (el.scrollHeight > 44 ? el.scrollHeight : 44) + 'px'; };
         
         window.switchView = (v) => {
@@ -425,7 +409,7 @@
                 await signInWithEmailAndPassword(auth, email, pw); 
                 document.getElementById('login-modal').classList.remove('open'); 
                 switchView('editor'); 
-            } catch (e) { alert("로그인 실패"); }
+            } catch (e) { alert("로그인 실패: 정보를 확인하세요."); }
         };
         
         window.adminLogout = async () => { if(confirm("로그아웃 하시겠습니까?")) { await signOut(auth); location.reload(); } };
@@ -433,7 +417,7 @@
         window.createNewPost = () => {
             currentId = null; const titleEl = document.getElementById('input-title');
             titleEl.value = ""; autoResize(titleEl);
-            ['tag-1', 'tag-2', 'tag-3'].forEach(id => document.getElementById(id).value = "");
+            document.getElementById('tag-1').value = ""; document.getElementById('tag-2').value = ""; document.getElementById('tag-3').value = "";
             document.getElementById('input-content').innerHTML = ""; renderEditorList();
             if(window.innerWidth <= 768) toggleSidebar();
         };
@@ -448,9 +432,10 @@
             if (!title.trim() && !textOnly.trim() && !tags.length) return;
             
             const data = { title, content, tags, excerpt: textOnly.slice(0, 100) + (textOnly.length > 100 ? '...' : ''), lastModified: serverTimestamp() };
+            const postsCol = collection(db, 'artifacts', appId, 'public', 'data', 'posts');
             try { 
                 if (currentId) await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'posts', currentId), data); 
-                else { const dr = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'posts'), { ...data, createdAt: serverTimestamp(), authorId: user.uid }); currentId = dr.id; } 
+                else { const dr = await addDoc(postsCol, { ...data, createdAt: serverTimestamp(), authorId: user.uid }); currentId = dr.id; } 
             } catch (e) { console.error("Save Error:", e); }
         };
         
